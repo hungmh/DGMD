@@ -1,0 +1,193 @@
+#!/bin/bash
+
+# Run DGMD for proteins using gromacs
+# @ Minh Hung
+# Usage: runDGMD -p PDB_File [parameters]
+#	Parameters:
+#	-n Number of core 
+#	-r Number of replica 
+#	-b Boxtype (cubic, dodecahedron or octahedron boxes,.. )
+#	-d Box Edge distance
+#	-t Simulation time in nanosec 
+#	-f Force field, type 'user' if ones wants to choose FF interactively
+# 	-m Reference density map file
+
+###############
+
+# GMX Setup 
+MPI="" # If running jobs with MPI softwares like "mpirun -np 10"
+GMX=gmx # GMX command, can be "gmx_mpi", ....
+
+# PDB Setup  
+PDB_File="" # PDB file (with the extension) or adding by command line with the flag -p
+
+# Simulation Setup
+BoxEdge=2.0 # simulation Box Edge distance
+BoxType=cubic # simulation Box type
+NT=8 # Number of core
+WATER=tip3p # Water type
+REPS=2 # Number of replica
+FF=charmm27 # Force field
+SimTime=3 # Simulation time in nanosec
+Ref=ref.mrc # Density map file
+
+# Parameters 
+usage() {
+  echo "Run DGMD for proteins"
+  echo "Usage: $0 -p PDB_File [parameters]"
+  echo "Parameters:"
+  echo "-n Number of core (default - $NT)"
+  echo "-b Boxtype (triclinic, cubic, dodecahedron or octahedron boxes; default - $BoxType)"
+  echo "-d BoxEdge ( default -$BoxEdge)"
+  echo "-t Simulation time in nanosec (default - $SimTime)"
+  echo "-r Number of replica (default - $REPS)"
+  echo "-f Force field (default - $FF), type 'user' if one wants to choose FF interactively"
+  echo "-m Reference density map file (default- $Ref)" 
+  exit 1
+}
+while getopts ":p:t:r:n:b:f:d:m" opt; do
+  case $opt in
+    p)
+      PDB_File=$OPTARG
+      ;;
+    t)
+      SimTime=$OPTARG
+      ;;
+    r)
+	  REPS=$OPTARG
+      ;;
+	b) 
+	  BoxType=$OPTARG
+	  ;;
+	d)
+	  BoxEdge=$OPTARG
+	  ;;
+	f)
+	  FF=$OPTARG
+	  ;;
+	m)
+	  Ref=$OPTARG
+	  ;;
+    n)
+      NT=$OPTARG
+      ;;
+    \?)
+      echo "Invalid option: -$OPTARG" >&2
+      exit 1
+      ;;
+    :)
+      echo "Option -$OPTARG requires an argument." >&2
+      exit 1
+      ;;
+  esac
+done
+
+if [ "$1"  == "" ]
+then
+    usage
+fi
+
+if [ ! -f $PDB_File ]
+then 
+	echo "No protein found"
+	exit 1
+fi
+
+PDBNAME=${PDB_File%.*} # get the base name (without the extension)
+
+# set "PDB" name (all the simulation filenames are based on this variable).
+PDB=$PDBNAME
+
+
+## Topology Creation
+#
+if [ $FF == "user" ]
+then
+	$GMX pdb2gmx -f $PDB".pdb" -o $PDB"_processed.gro" -water $WATER -ignh
+else	
+	$GMX pdb2gmx -f $PDB".pdb" -o $PDB"_processed.gro" -water $WATER -ignh -ff $FF
+fi
+
+## Solvatation
+#
+$GMX editconf -f  $PDB"_processed.gro" -o $PDB"_newbox.gro" -d $BoxEdge -bt $BoxType
+
+$GMX solvate -cp $PDB"_newbox.gro" -cs spc216.gro -o $PDB"_solv.gro" -p topol.top
+
+
+## Solvation and adding ions
+#
+$GMX grompp -f mdp/ions.mdp -c $PDB"_solv.gro" -p topol.top -o ions.tpr --maxwarn 1
+
+echo "SOL" | $GMX genion -s ions.tpr -o $PDB"_solv_ions.gro" -p topol.top -pname NA -nname CL -neutral
+
+### 
+ 
+for ((i=0; i<$REPS; i++))
+	do 
+	echo ">>> run_"$((i+1))
+	mkdir "run_"$((i+1))
+	cd "run_"$((i+1))
+	cp -R ../mdp .
+	cp ../$PDB"_solv_ions.gro" .
+	cp ../topol.top .
+	cp ../*.itp .
+	cp ../$Ref.mrc . 2> /dev/null # copy the ref map file
+
+	#
+	## Energy minimisation
+	#
+	$GMX grompp -f mdp/em.mdp -c $PDB"_solv_ions.gro" -p topol.top -o em.tpr
+	$MPI $GMX mdrun -v -deffnm em -nt $NT
+	
+	mkdir -p eq/mini
+	mkdir -p gro
+	mkdir graph
+	mv em* eq/mini/
+	mv mdout.mdp eq/mini/
+	mv *.gro gro/
+	
+	# potential energy plot
+	echo "11 0" | $GMX energy -f eq/mini/em.edr -o graph/mini_"$PDB"_pot.xvg
+
+	#
+	## NVT
+	#
+	$GMX grompp -f mdp/nvt.mdp -c eq/mini/em.gro -r eq/mini/em.gro  -p topol.top -o nvt.tpr -maxwarn 2
+	$MPI $GMX mdrun -deffnm nvt -v -nt $NT
+	
+	mkdir -p eq/nvt
+	mv nvt* eq/nvt/ 2> /dev/null
+	mv mdout.mdp eq/nvt/
+
+	# Temparture plot
+	echo "16 0" | $GMX energy -f eq/nvt/nvt.edr -o graph/temp_nvt.xvg
+
+	#
+	## NPT
+	#
+	$GMX grompp -f mdp/npt.mdp -c eq/nvt/nvt.gro -r eq/nvt/nvt.gro -t eq/nvt/nvt.cpt -p topol.top -o npt.tpr -maxwarn 2
+	$MPI $GMX mdrun -deffnm npt -v -nt $NT
+
+	mkdir -p eq/npt
+	mv npt* eq/npt/ 2> /dev/null
+	mv mdout.mdp eq/npt/
+	
+	# Pression and density 
+	echo "17 0" | $GMX energy -f eq/npt/npt.edr -o graph/npt_"$PDB"_pressure.xvg
+	echo "22 0" | $GMX energy -f eq/npt/npt.edr -o graph/npt_"$PDB"_volume.xvg
+
+	#
+	## MD Production 
+	#
+			
+	$GMX grompp -f mdp/md.mdp -c eq/npt/npt.gro -p topol.top -o md.tpr -maxwarn 2
+	
+	# Modify SimTime
+	$GMX convert-tpr -s md.tpr -o md.tpr -nsteps ${SimTime}000
+	
+	#$MPI $GMX mdrun -deffnm "md_"$PDB"_prod"  -v -nt $NT
+
+		
+	cd ../
+done
