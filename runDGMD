@@ -184,7 +184,7 @@ for ((i=0; i<$REPS; i++))
 	$GMX grompp -f mdp/md.mdp -c eq/npt/npt.gro -p topol.top -o md.tpr -maxwarn 2
 	
 	# Modify SimTime
-	$GMX convert-tpr -s md.tpr -o md.tpr -nsteps ${SimTime}000
+	$GMX convert-tpr -s md.tpr -o md.tpr -until ${SimTime}000
 	
 	#$MPI $GMX mdrun -deffnm "md_"$PDB"_prod"  -v -nt $NT
 
