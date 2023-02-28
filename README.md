@@ -1,4 +1,4 @@
-# Run Density guided simulations for proteins using Gromacs
+# Perform density guided MD simulations for soluble proteins
 
 Usage: `./runDGMD -p PDB_File [parameters]`
 
