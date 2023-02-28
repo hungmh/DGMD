@@ -24,7 +24,7 @@ PDB_File="" # PDB file (with the extension) or adding by command line with the f
 # Simulation Setup
 BoxEdge=2.0 # simulation Box Edge distance
 BoxType=cubic # simulation Box type
-NT=8 # Number of core
+NT=4 # Number of core
 WATER=tip3p # Water type
 REPS=2 # Number of replica
 FF=charmm27 # Force field
@@ -186,7 +186,7 @@ for ((i=0; i<$REPS; i++))
 	# Modify SimTime
 	$GMX convert-tpr -s md.tpr -o md.tpr -until ${SimTime}000
 	
-	#$MPI $GMX mdrun -deffnm "md_"$PDB"_prod"  -v -nt $NT
+	$MPI $GMX mdrun -deffnm md.tpr  -v -nt $NT
 
 		
 	cd ../
